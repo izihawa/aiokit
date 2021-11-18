@@ -5,57 +5,66 @@ from typing import List
 
 class AioThing:
     def __init__(self):
-        self.deps: List[AioThing] = []
-        self._shutting_down = False
+        self.starts: List[AioThing] = []
+        self.waits: List[AioThing] = []
         self.started = False
         self.start = self._guard_start(self.start)
         self.stop = self._guard_stop(self.stop)
+        self._current_task = None
 
     def _guard_start(self, fn):
         async def guarded_fn(*args, **kwargs):
             if self.started:
                 return
             self.started = True
-            for aw in self.deps:
-                await aw.start(*args, **kwargs)
-            return await fn(*args, **kwargs)
+            self.setup_hooks()
+            for aw in self.starts:
+                await aw.start()
+            for aw in self.waits:
+                await aw.start_and_wait()
+            self._current_task = asyncio.create_task(fn(*args, **kwargs))
+            return self._current_task
         return guarded_fn
 
     def _guard_stop(self, fn):
         async def guarded_fn(*args, **kwargs):
-            if not self.started or self._shutting_down:
+            if not self.started:
                 return
-            self._shutting_down = True
-            r = await fn(*args, **kwargs)
-            for aw in reversed(self.deps):
-                await aw.stop(*args, **kwargs)
             self.started = False
-            self._shutting_down = False
+            r = await fn(*args, **kwargs)
+            await self.cancel()
+            for aw in reversed(self.starts + self.waits):
+                await aw.stop()
             return r
         return guarded_fn
 
-    async def start(self, *args, **kwargs):
+    async def cancel(self):
+        if self._current_task:
+            self._current_task.cancel()
+            await self._current_task
+            self._current_task = None
+
+    def task(self):
+        return self._current_task
+
+    async def start(self):
         pass
 
-    async def stop(self, *args, **kwargs):
+    async def stop(self):
+        pass
+
+    async def start_and_wait(self):
+        await self.start()
+        await self.task()
+
+    def setup_hooks(self):
         pass
 
 
 class AioRootThing(AioThing):
-    def __init__(self):
-        super().__init__()
-        self._shutting_down = False
-
     def setup_hooks(self):
         for sig in (signal.SIGTERM, signal.SIGINT):
-            asyncio.get_event_loop().add_signal_handler(
-                sig, lambda: asyncio.get_event_loop().create_task(self.on_shutdown()),
-            )
+            asyncio.get_event_loop().add_signal_handler(sig, self._on_shutdown)
 
-    async def on_shutdown(self):
-        if self._shutting_down:
-            return
-        await self.stop()
-        await asyncio.get_event_loop().shutdown_asyncgens()
-        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-        await asyncio.gather(*tasks, return_exceptions=True)
+    def _on_shutdown(self):
+        asyncio.get_event_loop().create_task(self.stop())

@@ -1,22 +1,20 @@
 import asyncio
-from functools import partial
 import logging
 import multiprocessing
 import os
 import signal
 import time
+from functools import partial
 from typing import (
     Callable,
     List,
     Optional,
     Union,
 )
+
 import uvloop
 
-from .aiothing import (
-    AioRootThing,
-    AioThing,
-)
+from .aiothing import AioThing
 
 logger = logging.getLogger('aiokit.executors')
 
@@ -52,10 +50,10 @@ class MultiprocessAsyncExecutor:
             process.daemon = True
             self.processes.append(process)
 
-    def stop_children(self):
+    def stop_children(self, signum):
         for process in self.processes:
             try:
-                os.kill(process.pid, signal.SIGTERM)
+                os.kill(process.pid, signum)
             except ProcessLookupError:
                 pass
 
@@ -68,10 +66,10 @@ class MultiprocessAsyncExecutor:
             if old_handler and old_handler is not signal.default_int_handler:
                 def new_handler(signum, frame):
                     old_handler(signum, frame)
-                    self.stop_children()
+                    self.stop_children(signum)
             else:
                 def new_handler(signum, frame):
-                    self.stop_children()
+                    self.stop_children(signum)
 
             signal.signal(sig, new_handler)
 
@@ -79,7 +77,7 @@ class MultiprocessAsyncExecutor:
         while True:
             for process in self.processes:
                 if process.exitcode is not None:
-                    self.stop_children()
+                    self.stop_children(signal.SIGTERM)
                     for process_to_join in self.processes:
                         process_to_join.join()
                     return
@@ -87,13 +85,12 @@ class MultiprocessAsyncExecutor:
 
     def _run_loop(self, create_aiothing, shard):
         try:
-            uvloop.install()
-            loop = asyncio.new_event_loop()
+            loop = uvloop.new_event_loop()
             asyncio.set_event_loop(loop)
             aiothing = create_aiothing(shard)
-            if isinstance(aiothing, AioRootThing):
-                aiothing.setup_hooks()
-            loop.run_until_complete(aiothing.start())
+            loop.run_until_complete(aiothing.start_and_wait())
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
             logger.error(e)
             raise

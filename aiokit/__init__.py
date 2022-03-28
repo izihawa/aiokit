@@ -4,5 +4,4 @@ from .aiothing import (
 )
 from .executors import MultiprocessAsyncExecutor
 
-
 __all__ = ['AioRootThing', 'AioThing', 'MultiprocessAsyncExecutor']
